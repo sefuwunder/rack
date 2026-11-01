@@ -21,6 +21,19 @@ Top to bottom, one 1280x960 window:
   GLIDE, keyboard, GATE row, FILTER IN switch.
 - **MIXER strip** — LEVEL + MUTE per channel, peak bars, MASTER.
 
+**Flip to back** (`TAB` or the FLIP button in the header — flip is
+instant, no animation): the back shows every device's OUT jack and each
+synth's FILTER IN jack, with the signal flow drawn as cables. Mixer
+inputs are fixed and drawn dim; the filter-in patches are bright.
+Drag from an OUT jack to a synth's FILTER IN to patch it, click a
+patched IN to unpatch. The back cables are the same routing the front
+FILTER IN buttons cycle — one source of truth, two ways to work it.
+The back also carries the deeper controls the front macros skip: SP
+pad TUNE, grandmother filter envelope / noise / env amount / key
+track / reverb, ARP noise / ring / sample-and-hold / lag / VCA gain /
+AR envelope / reverb. Gate rows stay on the front: they are step
+sequencers, not patch points.
+
 ## Fixed routings (v1 has no free cables)
 
 - **Mixer**: every device feeds its own channel (level, mute) into the
@@ -49,10 +62,12 @@ System dependency: `libsdl2-dev`. Keys:
 - Letters play the selected synth: Z-row low octave, Q-row high octave
   (digits stay pads, so the Q-row black keys that would need number keys
   are skipped)
-- `Left`/`Right` shift the selected synth's octave, `-`/`=` BPM
+- `Left`/`Right` shift the selected synth's octave, `-`/`=` BPM,
+  `TAB` flips the rack
 - Mouse: click pads, steps, gates, mutes, FILTER IN; drag knobs
   vertically; mouse wheel over a knob nudges it. Clicking a strip
-  selects that synth for the letter keys.
+  selects that synth for the letter keys. On the back: drag OUT → IN
+  to patch, click a patched IN to unpatch.
 
 ## Check it without a display
 
@@ -63,8 +78,9 @@ cargo test --release
 ```
 
 `--smoke` renders blocks with a pad and two notes sounding and fails on
-silence. `--shot` draws the whole rack to a BMP. Tests cover the mixer,
-the clock gates, filter-in routing, and the vendored engine suites.
+silence. `--shot` draws the front of the rack to a BMP, `--shot-back`
+the back. Tests cover the mixer, the clock gates, filter-in routing,
+cable patch rules, and the vendored engine suites.
 
 ## Vendored engines
 
@@ -84,7 +100,9 @@ vendored decode tests live in `tests/data/`.
 
 ## v1 limits
 
-- No save/load, no MIDI input, no full patch bays (macro knobs only).
+- No save/load, no MIDI input, no full patch bays (macro knobs on the
+  front, deeper knobs on the back, but the synths' internal patch bays
+  are not exposed). Cables carry the audio filter-in paths only.
 - No fourtrack tape panel (the engine is vendored; the tape UI is not
   wired in yet). Step length stays 16 in the UI.
 - Gate timing is block-level (a gate note starts within the same

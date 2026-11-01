@@ -13,7 +13,7 @@ mod panel;
 mod rack;
 mod sp;
 
-use panel::{Action, UiState};
+use panel::{cable_drop, hit_back, Action, InJack, UiState, FLIP_RECT};
 use rack::Rack;
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::Event;
@@ -118,6 +118,8 @@ fn apply_action(rack: &mut Rack, ui: &mut UiState, a: Action, my: i32) {
         }
         Action::Mute(ch) => rack.mute[ch] = !rack.mute[ch],
         Action::SelectSynth(s) => rack.selected = s,
+        Action::SelectPad(i) => rack.sp_sel = i,
+        Action::JackOut(_) | Action::JackIn(_) => {}
         Action::None => {}
     }
 }
@@ -158,11 +160,18 @@ fn main() {
     let sdl = sdl2::init().expect("sdl init");
     let video = sdl.video().expect("video");
 
-    // --shot: draw the rack to a BMP without opening a window.
-    if let Some(i) = args.iter().position(|a| a == "--shot") {
-        let path = args.get(i + 1).cloned().unwrap_or_else(|| "rack-shot.bmp".to_string());
+    // --shot / --shot-back: draw the rack to a BMP without a window.
+    let shot = args
+        .iter()
+        .position(|a| a == "--shot")
+        .map(|i| (false, i))
+        .or_else(|| args.iter().position(|a| a == "--shot-back").map(|i| (true, i)));
+    if let Some((flipped, i)) = shot {
+        let path = args.get(i + 1).cloned().unwrap_or_else(|| {
+            if flipped { "rack-shot-back.bmp".to_string() } else { "rack-shot.bmp".to_string() }
+        });
         let r = Rack::new();
-        let ui = UiState::default();
+        let ui = UiState { flipped, ..UiState::default() };
         let surface =
             Surface::new(panel::W, panel::H, PixelFormatEnum::RGB24).expect("surface");
         let mut canvas = surface.into_canvas().expect("surface canvas");
@@ -199,6 +208,14 @@ fn main() {
                 Event::KeyDown { keycode: Some(k), repeat, .. } => {
                     if k == Keycode::Escape {
                         break 'run;
+                    }
+                    if k == Keycode::Tab && !repeat {
+                        // Flip the rack; any drag dies with the view.
+                        ui.flipped = !ui.flipped;
+                        ui.drag = None;
+                        ui.cable_drag = None;
+                        ui.cable_to = None;
+                        continue;
                     }
                     if k == Keycode::Space && !repeat {
                         if let Ok(mut r) = rack.lock() {
@@ -281,6 +298,48 @@ fn main() {
                 }
                 Event::MouseButtonDown { x, y, .. } => {
                     mouse_pos = (x, y);
+                    let (fx, fy, fw, fh) = FLIP_RECT;
+                    if x >= fx && x < fx + fw && y >= fy && y < fy + fh {
+                        ui.flipped = !ui.flipped;
+                        ui.drag = None;
+                        ui.cable_drag = None;
+                        ui.cable_to = None;
+                        continue;
+                    }
+                    if ui.flipped {
+                        match panel::hit_back(x, y) {
+                            Action::JackOut(src) => {
+                                ui.cable_drag = Some(src);
+                                ui.cable_to = Some((x, y));
+                            }
+                            Action::JackIn(dst) => {
+                                // Click a patched input to unpatch it.
+                                if let Ok(mut r) = rack.lock() {
+                                    match dst {
+                                        InJack::Gm => r.gm_filter_in = rack::FilterIn::Off,
+                                        InJack::Arp => r.arp_filter_in = rack::FilterIn::Off,
+                                    }
+                                }
+                            }
+                            Action::Knob(id) => {
+                                if let Ok(r) = rack.lock() {
+                                    ui.drag = Some((id, y, id.t(&r)));
+                                }
+                            }
+                            Action::SelectPad(i) => {
+                                if let Ok(mut r) = rack.lock() {
+                                    r.sp_sel = i;
+                                }
+                            }
+                            Action::SelectSynth(s) => {
+                                if let Ok(mut r) = rack.lock() {
+                                    r.selected = s;
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                     if let Ok(mut r) = rack.lock() {
                         let a = panel::hit(&r, x, y);
                         apply_action(&mut r, &mut ui, a, y);
@@ -288,13 +347,26 @@ fn main() {
                 }
                 Event::MouseMotion { x, y, .. } => {
                     mouse_pos = (x, y);
+                    if ui.cable_drag.is_some() {
+                        ui.cable_to = Some((x, y));
+                    }
                     if let Some((id, start_y, start_t)) = ui.drag {
                         if let Ok(mut r) = rack.lock() {
                             id.set_t(&mut r, start_t + (start_y - y) as f32 / 150.0);
                         }
                     }
                 }
-                Event::MouseButtonUp { .. } => {
+                Event::MouseButtonUp { x, y, .. } => {
+                    if let Some(src) = ui.cable_drag.take() {
+                        ui.cable_to = None;
+                        if ui.flipped {
+                            if let Action::JackIn(dst) = hit_back(x, y) {
+                                if let Ok(mut r) = rack.lock() {
+                                    cable_drop(&mut r, src, dst);
+                                }
+                            }
+                        }
+                    }
                     ui.drag = None;
                     if let Some((s, midi)) = ui.mouse_note.take() {
                         if let Ok(mut r) = rack.lock() {

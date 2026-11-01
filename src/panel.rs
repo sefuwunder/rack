@@ -42,6 +42,27 @@ const KEY_BLACK: Color = Color::RGB(20, 20, 20);
 pub struct UiState {
     pub drag: Option<(KnobId, i32, f32)>,
     pub mouse_note: Option<(usize, u8)>,
+    /// Back view visible (Tab / FLIP button toggles).
+    pub flipped: bool,
+    /// Output jack a cable is being dragged from, if any.
+    pub cable_drag: Option<OutJack>,
+    /// Current mouse position while a cable drag is active.
+    pub cable_to: Option<(i32, i32)>,
+}
+
+/// A patchable output jack on the back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OutJack {
+    Sp,
+    Gm,
+    Arp,
+}
+
+/// A patchable input jack on the back (a synth's filter input).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InJack {
+    Gm,
+    Arp,
 }
 
 /// Every draggable knob in the rack, with its range and scale.
@@ -75,6 +96,24 @@ pub enum KnobId {
     ArpGlide,
     MixLevel(usize),
     MixMaster,
+    // Back-panel knobs: deeper params the front macros skip.
+    SpTune,
+    GmNoise,
+    GmEnvAmt,
+    GmKbTrack,
+    GmFAttack,
+    GmFDecay,
+    GmFSustain,
+    GmFRelease,
+    GmReverb,
+    ArpNoise,
+    ArpRing,
+    ArpShRate,
+    ArpLag,
+    ArpVcaGain,
+    ArpArAttack,
+    ArpArRelease,
+    ArpReverb,
 }
 
 impl KnobId {
@@ -98,6 +137,14 @@ impl KnobId {
             ArpAttack | ArpDecay | ArpRelease => (0.001, 2.0, true),
             ArpGlide => (0.0, 1.0, false),
             MixLevel(_) | MixMaster => (0.0, 1.0, false),
+            SpTune => (-24.0, 24.0, false),
+            GmNoise | GmReverb | ArpNoise | ArpRing | ArpVcaGain | ArpReverb => (0.0, 1.0, false),
+            GmEnvAmt => (-1.0, 1.0, false),
+            GmKbTrack => (0.0, 1.0, false),
+            GmFAttack | GmFDecay | GmFRelease | ArpArAttack | ArpArRelease => (0.001, 2.0, true),
+            GmFSustain => (0.0, 1.0, false),
+            ArpShRate => (0.1, 50.0, true),
+            ArpLag => (0.0, 0.5, false),
         }
     }
 
@@ -132,6 +179,23 @@ impl KnobId {
             ArpGlide => "GLIDE",
             MixLevel(_) => "LEVEL",
             MixMaster => "MASTER",
+            SpTune => "TUNE",
+            GmNoise => "NOISE",
+            GmEnvAmt => "ENV AMT",
+            GmKbTrack => "KB TRACK",
+            GmFAttack => "F-ATK",
+            GmFDecay => "F-DEC",
+            GmFSustain => "F-SUS",
+            GmFRelease => "F-REL",
+            GmReverb => "REVERB",
+            ArpNoise => "NOISE",
+            ArpRing => "RING",
+            ArpShRate => "SH RATE",
+            ArpLag => "LAG",
+            ArpVcaGain => "VCA GAIN",
+            ArpArAttack => "AR-ATK",
+            ArpArRelease => "AR-REL",
+            ArpReverb => "REVERB",
         }
     }
 
@@ -167,6 +231,23 @@ impl KnobId {
             ArpGlide => r.arp.params.glide,
             MixLevel(i) => r.level[i],
             MixMaster => r.master,
+            SpTune => r.sp.pads[p].tune_st,
+            GmNoise => r.gm.params.noise_level,
+            GmEnvAmt => r.gm.params.env_amt,
+            GmKbTrack => r.gm.params.kb_track,
+            GmFAttack => r.gm.params.f_attack,
+            GmFDecay => r.gm.params.f_decay,
+            GmFSustain => r.gm.params.f_sustain,
+            GmFRelease => r.gm.params.f_release,
+            GmReverb => r.gm.params.reverb_mix,
+            ArpNoise => r.arp.params.noise_level,
+            ArpRing => r.arp.params.ring_level,
+            ArpShRate => r.arp.params.sh_rate,
+            ArpLag => r.arp.params.lag_time,
+            ArpVcaGain => r.arp.params.vca_gain,
+            ArpArAttack => r.arp.params.ar_a,
+            ArpArRelease => r.arp.params.ar_r,
+            ArpReverb => r.arp.params.rev_mix,
         }
     }
 
@@ -205,6 +286,23 @@ impl KnobId {
             ArpGlide => r.arp.params.glide = v,
             MixLevel(i) => r.level[i] = v,
             MixMaster => r.master = v,
+            SpTune => r.sp.pads[p].tune_st = v.clamp(-24.0, 24.0),
+            GmNoise => r.gm.params.noise_level = v,
+            GmEnvAmt => r.gm.params.env_amt = v,
+            GmKbTrack => r.gm.params.kb_track = v,
+            GmFAttack => r.gm.params.f_attack = v,
+            GmFDecay => r.gm.params.f_decay = v,
+            GmFSustain => r.gm.params.f_sustain = v,
+            GmFRelease => r.gm.params.f_release = v,
+            GmReverb => r.gm.params.reverb_mix = v,
+            ArpNoise => r.arp.params.noise_level = v,
+            ArpRing => r.arp.params.ring_level = v,
+            ArpShRate => r.arp.params.sh_rate = v,
+            ArpLag => r.arp.params.lag_time = v,
+            ArpVcaGain => r.arp.params.vca_gain = v,
+            ArpArAttack => r.arp.params.ar_a = v,
+            ArpArRelease => r.arp.params.ar_r = v,
+            ArpReverb => r.arp.params.rev_mix = v,
         }
     }
 
@@ -236,7 +334,7 @@ impl KnobId {
             SpLfoRate | GmLfoRate => format!("{v:.1} HZ"),
             SpLfoCut => format!("{v:+.0} ST"),
             SpLfoRes => format!("{v:+.2} Q"),
-            GmAttack | GmDecay | GmRelease | ArpAttack | ArpDecay | ArpRelease => {
+            GmAttack | GmDecay | GmRelease | ArpAttack | ArpDecay | ArpRelease | GmFAttack | GmFDecay | GmFRelease | ArpArAttack | ArpArRelease => {
                 if v < 0.1 {
                     format!("{v:.3} S")
                 } else {
@@ -244,6 +342,10 @@ impl KnobId {
                 }
             }
             GmGlide | ArpGlide => format!("{v:.2} S"),
+            SpTune => format!("{v:+.0} ST"),
+            GmEnvAmt => format!("{:+.0}%", v * 100.0),
+            ArpShRate => format!("{v:.1} HZ"),
+            ArpLag => format!("{v:.2} S"),
             _ => format!("{:.0}%", v * 100.0),
         }
     }
@@ -269,6 +371,9 @@ pub enum Action {
     ArpFilterIn,
     Mute(usize),
     SelectSynth(usize),
+    SelectPad(usize),
+    JackOut(OutJack),
+    JackIn(InJack),
     None,
 }
 
@@ -496,8 +601,21 @@ pub fn draw<T: RenderTarget>(c: &mut Canvas<T>, r: &Rack, ui: &UiState) {
     text(c, 664, 14, &format!("{:.0}%", r.sp.swing), 2, INK);
     rect(c, 724, 8, 28, 32, BTN);
     text(c, 732, 17, "+", 1, INK);
-    text(c, 820, 16, "SPACE PLAY  1-8 PADS  LETTERS = KEYS  ESC QUIT", 1, DIM);
+    text(c, 820, 16, "SPACE PLAY  1-8 PADS  TAB FLIP  ESC QUIT", 1, DIM);
+    let flip = Rect::new(FLIP_RECT.0, FLIP_RECT.1, FLIP_RECT.2 as u32, FLIP_RECT.3 as u32);
+    rect(c, flip.x, flip.y, flip.width(), flip.height(), BTN);
+    text(c, flip.x + 34, flip.y + 11, if ui.flipped { "FRONT" } else { "FLIP" }, 1, INK);
+    if ui.flipped {
+        draw_back(c, r, ui);
+    } else {
+        draw_front(c, r, ui);
+    }
+}
 
+/// Flip button rect, shared by draw and the event loop.
+pub const FLIP_RECT: (i32, i32, i32, i32) = (1100, 8, 140, 32);
+
+fn draw_front<T: RenderTarget>(c: &mut Canvas<T>, r: &Rack, ui: &UiState) {
     // SP strip.
     rect(c, 8, SP_Y, 1264, 300, SP_BG);
     text(c, 20, SP_Y + 10, "SP-1200", 2, INK);
@@ -769,6 +887,272 @@ pub fn hit(r: &Rack, x: i32, y: i32) -> Action {
     Action::None
 }
 
+// ---- Back of the rack ----
+
+const BACK_SP_BG: Color = Color::RGB(40, 40, 46);
+const BACK_GM_BG: Color = Color::RGB(74, 66, 50);
+const BACK_ARP_BG: Color = Color::RGB(20, 20, 22);
+const CABLE_DIM: Color = Color::RGB(110, 110, 120);
+const CABLE_HOT: Color = Color::RGB(255, 140, 40);
+
+/// Jack centers on the back, shared by draw, hit-test, and cables.
+fn sp_out_pos() -> (i32, i32) {
+    (60, SP_Y + 70)
+}
+fn gm_out_pos() -> (i32, i32) {
+    (60, GM_Y + 70)
+}
+fn gm_in_pos() -> (i32, i32) {
+    (200, GM_Y + 70)
+}
+fn arp_out_pos() -> (i32, i32) {
+    (60, ARP_Y + 70)
+}
+fn arp_in_pos() -> (i32, i32) {
+    (200, ARP_Y + 70)
+}
+fn mix_in_pos(ch: usize) -> (i32, i32) {
+    (240 + ch as i32 * 300, MIX_Y + 70)
+}
+fn master_out_pos() -> (i32, i32) {
+    (1150, MIX_Y + 70)
+}
+
+fn out_pos(j: OutJack) -> (i32, i32) {
+    match j {
+        OutJack::Sp => sp_out_pos(),
+        OutJack::Gm => gm_out_pos(),
+        OutJack::Arp => arp_out_pos(),
+    }
+}
+
+fn draw_jack<T: RenderTarget>(c: &mut Canvas<T>, cx: i32, cy: i32, label: &str, ink: Color, hot: bool) {
+    circle(c, cx, cy, 16, ink);
+    rect(c, cx - 7, cy - 7, 14, 14, Color::RGB(8, 8, 10));
+    if hot {
+        circle(c, cx, cy, 20, SEL);
+    }
+    text(c, cx - 20, cy + 26, label, 1, ink);
+}
+
+/// Cubic cable with vertical tangents: hangs like a patch cord.
+fn bezier<T: RenderTarget>(c: &mut Canvas<T>, x0: i32, y0: i32, x1: i32, y1: i32, col: Color) {
+    let dy = (y1 - y0) as f64;
+    let (x0f, y0f, x1f, y1f) = (x0 as f64, y0 as f64, x1 as f64, y1 as f64);
+    let c1 = (x0f, y0f + dy * 0.5);
+    let c2 = (x1f, y1f - dy * 0.5);
+    let dist = ((x1f - x0f).powi(2) + (y1f - y0f).powi(2)).sqrt();
+    let n = ((dist / 3.0) as usize).clamp(60, 400);
+    for i in 0..=n {
+        let t = i as f64 / n as f64;
+        let mt = 1.0 - t;
+        let x = mt.powi(3) * x0f + 3.0 * mt * mt * t * c1.0 + 3.0 * mt * t * t * c2.0 + t.powi(3) * x1f;
+        let y = mt.powi(3) * y0f + 3.0 * mt * mt * t * c1.1 + 3.0 * mt * t * t * c2.1 + t.powi(3) * y1f;
+        dot(c, x as i32, y as i32, col);
+    }
+}
+
+fn draw_back<T: RenderTarget>(c: &mut Canvas<T>, r: &Rack, ui: &UiState) {
+    // SP back: OUT jack, pad select, tune.
+    rect(c, 8, SP_Y, 1264, 300, BACK_SP_BG);
+    text(c, 20, SP_Y + 10, "SP-1200 -- BACK", 2, INK);
+    draw_jack(c, sp_out_pos().0, sp_out_pos().1, "OUT", INK, ui.cable_drag == Some(OutJack::Sp));
+    for i in 0..8 {
+        let x = 200 + i as i32 * 110;
+        rect(c, x, SP_Y + 50, 100, 40, if r.sp_sel == i { SEL } else { BTN });
+        text(c, x + 10, SP_Y + 63, &format!("PAD {}", i + 1), 1, if r.sp_sel == i { DARK_INK } else { INK });
+    }
+    let sel = ui.drag.map(|(d, _, _)| d) == Some(KnobId::SpTune);
+    knob(c, 1100, SP_Y + 44, KnobId::SpTune, r, INK, sel);
+    text(c, 20, SP_Y + 220, "DRAG FROM OUT TO A SYNTH FILTER IN -- CLICK A PATCHED IN TO UNPATCH", 1, DIM);
+
+    // Synth backs: OUT + FILTER IN jacks, deeper knobs.
+    for (synth, y0, bg, title, knobs, filter_in) in [
+        (
+            0usize,
+            GM_Y,
+            BACK_GM_BG,
+            "GRANDMOTHER -- BACK",
+            [
+                KnobId::GmNoise,
+                KnobId::GmEnvAmt,
+                KnobId::GmKbTrack,
+                KnobId::GmFAttack,
+                KnobId::GmFDecay,
+                KnobId::GmFSustain,
+                KnobId::GmFRelease,
+                KnobId::GmReverb,
+            ],
+            r.gm_filter_in,
+        ),
+        (
+            1usize,
+            ARP_Y,
+            BACK_ARP_BG,
+            "ARP 2600 -- BACK",
+            [
+                KnobId::ArpNoise,
+                KnobId::ArpRing,
+                KnobId::ArpShRate,
+                KnobId::ArpLag,
+                KnobId::ArpVcaGain,
+                KnobId::ArpArAttack,
+                KnobId::ArpArRelease,
+                KnobId::ArpReverb,
+            ],
+            r.arp_filter_in,
+        ),
+    ] {
+        rect(c, 8, y0, 1264, 236, bg);
+        if r.selected == synth {
+            frame(c, 8, y0, 1264, 236, SEL);
+        }
+        text(c, 20, y0 + 10, title, 2, INK);
+        let (op, ip) = if synth == 0 { (gm_out_pos(), gm_in_pos()) } else { (arp_out_pos(), arp_in_pos()) };
+        let oj = if synth == 0 { OutJack::Gm } else { OutJack::Arp };
+        draw_jack(c, op.0, op.1, "OUT", INK, ui.cable_drag == Some(oj));
+        draw_jack(c, ip.0, ip.1, "FILTER IN", INK, filter_in != FilterIn::Off);
+        let state = match filter_in {
+            FilterIn::Off => "OPEN",
+            FilterIn::Sp => "PATCHED: DRUMS",
+            FilterIn::Gm => "PATCHED: GRAND",
+            FilterIn::Arp => "PATCHED: ARP",
+        };
+        text(c, 260, y0 + 64, state, 1, INK);
+        for (i, id) in knobs.iter().enumerate() {
+            let x = 20 + i as i32 * 122;
+            let sel = ui.drag.map(|(d, _, _)| d) == Some(*id);
+            knob(c, x, y0 + 132, *id, r, INK, sel);
+        }
+    }
+
+    // Mixer back: fixed inputs + master out.
+    rect(c, 8, MIX_Y, 1264, 140, MIX_BG);
+    text(c, 20, MIX_Y + 10, "MIXER -- BACK", 2, INK);
+    for ch in 0..3 {
+        let (jx, jy) = mix_in_pos(ch);
+        draw_jack(c, jx, jy, ["SP IN", "GM IN", "ARP IN"][ch], INK, false);
+    }
+    draw_jack(c, master_out_pos().0, master_out_pos().1, "MASTER OUT", INK, false);
+    text(c, 20, MIX_Y + 116, "CHANNEL INPUTS ARE FIXED", 1, DIM);
+
+    // Cables over everything: fixed mixer runs dim, patches hot.
+    let (s, g, a) = (sp_out_pos(), gm_out_pos(), arp_out_pos());
+    bezier(c, s.0, s.1, mix_in_pos(0).0, mix_in_pos(0).1, CABLE_DIM);
+    bezier(c, g.0, g.1, mix_in_pos(1).0, mix_in_pos(1).1, CABLE_DIM);
+    bezier(c, a.0, a.1, mix_in_pos(2).0, mix_in_pos(2).1, CABLE_DIM);
+    match r.gm_filter_in {
+        FilterIn::Sp => bezier(c, s.0, s.1, gm_in_pos().0, gm_in_pos().1, CABLE_HOT),
+        FilterIn::Arp => bezier(c, a.0, a.1, gm_in_pos().0, gm_in_pos().1, CABLE_HOT),
+        _ => {}
+    }
+    match r.arp_filter_in {
+        FilterIn::Sp => bezier(c, s.0, s.1, arp_in_pos().0, arp_in_pos().1, CABLE_HOT),
+        FilterIn::Gm => bezier(c, g.0, g.1, arp_in_pos().0, arp_in_pos().1, CABLE_HOT),
+        _ => {}
+    }
+    if let (Some(src), Some((mx, my))) = (ui.cable_drag, ui.cable_to) {
+        let (sx, sy) = out_pos(src);
+        bezier(c, sx, sy, mx, my, SEL);
+    }
+}
+
+/// Patch a dragged cable into a synth's filter input. A synth never
+/// takes itself; anything else patches. Returns false when rejected.
+pub fn cable_drop(r: &mut Rack, src: OutJack, dst: InJack) -> bool {
+    let fi = match (dst, src) {
+        (InJack::Gm, OutJack::Sp) => FilterIn::Sp,
+        (InJack::Gm, OutJack::Arp) => FilterIn::Arp,
+        (InJack::Arp, OutJack::Sp) => FilterIn::Sp,
+        (InJack::Arp, OutJack::Gm) => FilterIn::Gm,
+        _ => return false,
+    };
+    match dst {
+        InJack::Gm => r.gm_filter_in = fi,
+        InJack::Arp => r.arp_filter_in = fi,
+    }
+    true
+}
+
+fn jack_hit(x: i32, y: i32, cx: i32, cy: i32) -> bool {
+    (x - cx).abs() <= 18 && (y - cy).abs() <= 18
+}
+
+/// Hit-test for the back view. Mixer jacks are fixed, so they are not
+/// actions; synth strip background selects the synth.
+pub fn hit_back(x: i32, y: i32) -> Action {
+    if jack_hit(x, y, sp_out_pos().0, sp_out_pos().1) {
+        return Action::JackOut(OutJack::Sp);
+    }
+    if jack_hit(x, y, gm_out_pos().0, gm_out_pos().1) {
+        return Action::JackOut(OutJack::Gm);
+    }
+    if jack_hit(x, y, gm_in_pos().0, gm_in_pos().1) {
+        return Action::JackIn(InJack::Gm);
+    }
+    if jack_hit(x, y, arp_out_pos().0, arp_out_pos().1) {
+        return Action::JackOut(OutJack::Arp);
+    }
+    if jack_hit(x, y, arp_in_pos().0, arp_in_pos().1) {
+        return Action::JackIn(InJack::Arp);
+    }
+    // SP back: pad select + tune.
+    if (SP_Y..SP_Y + 300).contains(&y) {
+        for i in 0..8 {
+            if in_rect(x, y, 200 + i as i32 * 110, SP_Y + 50, 100, 40) {
+                return Action::SelectPad(i);
+            }
+        }
+        let (rx, ry, w, h) = knob_cell(1100, SP_Y + 44);
+        if in_rect(x, y, rx, ry, w, h) {
+            return Action::Knob(KnobId::SpTune);
+        }
+        return Action::None;
+    }
+    // Synth backs: knobs, then background selects.
+    for (synth, y0, knobs) in [
+        (
+            0usize,
+            GM_Y,
+            [
+                KnobId::GmNoise,
+                KnobId::GmEnvAmt,
+                KnobId::GmKbTrack,
+                KnobId::GmFAttack,
+                KnobId::GmFDecay,
+                KnobId::GmFSustain,
+                KnobId::GmFRelease,
+                KnobId::GmReverb,
+            ],
+        ),
+        (
+            1usize,
+            ARP_Y,
+            [
+                KnobId::ArpNoise,
+                KnobId::ArpRing,
+                KnobId::ArpShRate,
+                KnobId::ArpLag,
+                KnobId::ArpVcaGain,
+                KnobId::ArpArAttack,
+                KnobId::ArpArRelease,
+                KnobId::ArpReverb,
+            ],
+        ),
+    ] {
+        if (y0..y0 + 236).contains(&y) {
+            for (i, id) in knobs.iter().enumerate() {
+                let (rx, ry, w, h) = knob_cell(20 + i as i32 * 122, y0 + 132);
+                if in_rect(x, y, rx, ry, w, h) {
+                    return Action::Knob(*id);
+                }
+            }
+            return Action::SelectSynth(synth);
+        }
+    }
+    Action::None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,5 +1207,49 @@ fn primitives_draw_on_surface() {
         assert_eq!(id.get(&r), 20.0);
         id.set_t(&mut r, 1.0);
         assert_eq!(id.get(&r), 20000.0);
+    }
+
+    #[test]
+    fn back_jacks_hit_and_cables_patch() {
+        assert_eq!(hit_back(60, SP_Y + 70), Action::JackOut(OutJack::Sp));
+        assert_eq!(hit_back(200, GM_Y + 70), Action::JackIn(InJack::Gm));
+        assert_eq!(hit_back(200, ARP_Y + 70), Action::JackIn(InJack::Arp));
+        assert_eq!(hit_back(60, GM_Y + 160), Action::Knob(KnobId::GmNoise));
+        assert_eq!(hit_back(360, SP_Y + 70), Action::SelectPad(1));
+        let mut r = Rack::new();
+        assert!(cable_drop(&mut r, OutJack::Sp, InJack::Gm));
+        assert_eq!(r.gm_filter_in, FilterIn::Sp);
+        assert!(cable_drop(&mut r, OutJack::Arp, InJack::Gm));
+        assert_eq!(r.gm_filter_in, FilterIn::Arp);
+        assert!(!cable_drop(&mut r, OutJack::Gm, InJack::Gm));
+        assert_eq!(r.gm_filter_in, FilterIn::Arp, "self-patch must not change state");
+        assert!(cable_drop(&mut r, OutJack::Gm, InJack::Arp));
+        assert_eq!(r.arp_filter_in, FilterIn::Gm);
+        assert!(!cable_drop(&mut r, OutJack::Arp, InJack::Arp));
+    }
+
+    #[test]
+    fn back_knobs_round_trip() {
+        let mut r = Rack::new();
+        KnobId::SpTune.set_t(&mut r, 0.5);
+        assert_eq!(KnobId::SpTune.get(&r), 0.0);
+        KnobId::GmEnvAmt.set_t(&mut r, 0.75);
+        assert!((KnobId::GmEnvAmt.get(&r) - 0.5).abs() < 1e-4);
+        KnobId::ArpShRate.set_t(&mut r, 0.5);
+        // sqrt(0.1 * 50) = sqrt(5) ~= 2.236.
+        assert!((KnobId::ArpShRate.get(&r) - 2.236).abs() < 0.01);
+    }
+
+    #[test]
+    fn back_view_draws_to_surface() {
+        use sdl2::pixels::PixelFormatEnum;
+        use sdl2::surface::Surface;
+        let mut r = Rack::new();
+        r.gm_filter_in = FilterIn::Sp;
+        r.arp_filter_in = FilterIn::Gm;
+        let ui = UiState { flipped: true, cable_drag: Some(OutJack::Arp), cable_to: Some((500, 500)), ..UiState::default() };
+        let surface = Surface::new(W, H, PixelFormatEnum::RGB24).unwrap();
+        let mut canvas = surface.into_canvas().unwrap();
+        super::draw(&mut canvas, &r, &ui);
     }
 }
