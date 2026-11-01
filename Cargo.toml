@@ -1,0 +1,11 @@
+[package]
+name = "rack"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sdl2 = "0.37"
+minimp3 = "0.5"
+
+[profile.release]
+opt-level = 3
