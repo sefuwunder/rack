@@ -872,6 +872,13 @@ pub struct Synth {
 }
 
 impl Synth {
+    /// RACK ADAPTATION (not in grandmother upstream): the last computed
+    /// LFO value, for the rack's LFO OUT jack. Block-rate CV: the value
+    /// is from the previous render block's final sample.
+    pub fn lfo_value(&self) -> f32 {
+        self.voice.prev_lfo
+    }
+
     pub fn new(sr: f32) -> Self {
         Synth {
             params: Params::default(),

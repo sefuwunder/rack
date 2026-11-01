@@ -1,20 +1,27 @@
-//! Rack player v1: one window, three engines, one mixer.
+//! Rack player v1: one window, four engines, one mixer.
 //!
 //! Reason-style virtual rack, compact edition: an SP-1200 strip (pads,
 //! steps, per-pad filter + LFO), two synth strips (macro knobs, keyboard,
-//! gate row, filter-in switch), and a mixer. The SP transport is the
-//! rack clock. No save/load yet; the rack always starts from the factory
-//! state of the three engines.
+//! gate row with per-step notes, filter-in switch), a sampler strip
+//! (pitched sample voice, drop a .wav/.mp3 on the window), and a mixer.
+//! The SP transport is the rack clock. No keys were added or changed:
+//! save/load are header buttons, everything else is mouse, TAB flip,
+//! or the existing keys.
 
 mod arp;
 mod font;
 mod gm;
 mod panel;
+mod project;
 mod rack;
+mod samp;
 mod sp;
 
-use panel::{cable_drop, hit_back, Action, InJack, UiState, FLIP_RECT};
-use rack::Rack;
+use panel::{
+    cable_drop, cv_drop, gate_drop, hit_back, Action, CvDst, DragSrc, GateDst, InJack, UiState,
+    FLIP_RECT,
+};
+use rack::{CvIn, GateIn, Rack};
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -102,8 +109,6 @@ fn apply_action(rack: &mut Rack, ui: &mut UiState, a: Action, my: i32) {
         Action::Knob(id) => {
             ui.drag = Some((id, my, id.t(rack)));
         }
-        Action::GmGate(i) => rack.gm_gate[i] = !rack.gm_gate[i],
-        Action::ArpGate(i) => rack.arp_gate[i] = !rack.arp_gate[i],
         Action::GmFilterIn => rack.cycle_filter_in(0),
         Action::ArpFilterIn => rack.cycle_filter_in(1),
         Action::GmKey(note) => {
@@ -116,10 +121,28 @@ fn apply_action(rack: &mut Rack, ui: &mut UiState, a: Action, my: i32) {
             rack.arp.note_on(note as f32);
             ui.mouse_note = Some((1, note));
         }
+        Action::SampKey(note) => {
+            rack.selected = 2;
+            rack.samp.note_on(note);
+            ui.mouse_note = Some((2, note));
+        }
+        Action::SampLoop => {
+            rack.samp.loop_ = !rack.samp.loop_;
+        }
         Action::Mute(ch) => rack.mute[ch] = !rack.mute[ch],
         Action::SelectSynth(s) => rack.selected = s,
         Action::SelectPad(i) => rack.sp_sel = i,
-        Action::JackOut(_) | Action::JackIn(_) => {}
+        // Handled in the event loop, not here: gate presses (toggle
+        // vs note drag), back-view cables, save/load buttons.
+        Action::GateCell(..)
+        | Action::JackOut(_)
+        | Action::JackIn(_)
+        | Action::GateOutJack(_)
+        | Action::GateInJack(_)
+        | Action::CvOutJack(_)
+        | Action::CvInJack(_)
+        | Action::Save
+        | Action::Load => {}
         Action::None => {}
     }
 }
@@ -127,7 +150,7 @@ fn apply_action(rack: &mut Rack, ui: &mut UiState, a: Action, my: i32) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Headless smoke: render blocks with a pad + two notes sounding.
+    // Headless smoke: render blocks with a pad + three notes sounding.
     if args.iter().any(|a| a == "--smoke") {
         let secs: f32 = args
             .iter()
@@ -139,6 +162,7 @@ fn main() {
         r.sp.trigger(0);
         r.gm.voice.note_on(48);
         r.arp.note_on(48.0);
+        r.samp.note_on(60);
         let blocks = (secs * 44100.0 / 1024.0) as usize;
         let mut peak = 0.0f32;
         for _ in 0..blocks {
@@ -190,7 +214,34 @@ fn main() {
     let mut canvas = window.into_canvas().present_vsync().build().expect("canvas");
 
     let audio = sdl.audio().expect("audio");
+    // Project + sample flags. --project loads at startup and becomes
+    // the SAVE target; --sample replaces the sampler's default sine.
+    let mut project_path = "rack-project.json".to_string();
+    if let Some(i) = args.iter().position(|a| a == "--project") {
+        if let Some(p) = args.get(i + 1) {
+            project_path = p.clone();
+        }
+    }
     let rack = Arc::new(Mutex::new(Rack::new()));
+    if args.iter().any(|a| a == "--project") && std::path::Path::new(&project_path).exists() {
+        match project::load(&project_path) {
+            Ok(loaded) => {
+                if let Ok(mut r) = rack.lock() {
+                    *r = loaded;
+                }
+            }
+            Err(e) => eprintln!("--project: {e} (starting factory)"),
+        }
+    }
+    if let Some(i) = args.iter().position(|a| a == "--sample") {
+        if let Some(p) = args.get(i + 1) {
+            if let Ok(mut r) = rack.lock() {
+                if let Err(e) = r.samp.load_file(p) {
+                    eprintln!("--sample: {e}");
+                }
+            }
+        }
+    }
     let spec = AudioSpecDesired { freq: Some(44100), channels: Some(1), samples: Some(1024) };
     let device = audio
         .open_playback(None, &spec, |_| RackCallback { rack: Arc::clone(&rack) })
@@ -215,6 +266,7 @@ fn main() {
                         ui.drag = None;
                         ui.cable_drag = None;
                         ui.cable_to = None;
+                        ui.gate_press = None;
                         continue;
                     }
                     if k == Keycode::Space && !repeat {
@@ -259,10 +311,10 @@ fn main() {
                             }
                             if let Ok(mut r) = rack.lock() {
                                 let d = if k == Keycode::Left { -1 } else { 1 };
-                                if r.selected == 0 {
-                                    r.gm_octave = (r.gm_octave + d).clamp(-2, 2);
-                                } else {
-                                    r.arp_octave = (r.arp_octave + d).clamp(-2, 2);
+                                match r.selected {
+                                    0 => r.gm_octave = (r.gm_octave + d).clamp(-2, 2),
+                                    1 => r.arp_octave = (r.arp_octave + d).clamp(-2, 2),
+                                    _ => r.samp.octave = (r.samp.octave + d).clamp(-2, 2),
                                 }
                             }
                         }
@@ -274,10 +326,10 @@ fn main() {
                                 if let Ok(mut r) = rack.lock() {
                                     let s = r.selected;
                                     let midi = (r.base_note(s) as i32 + semi).clamp(0, 127) as u8;
-                                    if s == 0 {
-                                        r.gm.voice.note_on(midi);
-                                    } else {
-                                        r.arp.note_on(midi as f32);
+                                    match s {
+                                        0 => r.gm.voice.note_on(midi),
+                                        1 => r.arp.note_on(midi as f32),
+                                        _ => r.samp.note_on(midi),
                                     }
                                     pressed.insert(k, (s, midi));
                                 }
@@ -288,10 +340,10 @@ fn main() {
                 Event::KeyUp { keycode: Some(k), .. } => {
                     if let Some((s, midi)) = pressed.remove(&k) {
                         if let Ok(mut r) = rack.lock() {
-                            if s == 0 {
-                                r.gm.voice.note_off(midi);
-                            } else {
-                                r.arp.note_off(midi as f32);
+                            match s {
+                                0 => r.gm.voice.note_off(midi),
+                                1 => r.arp.note_off(midi as f32),
+                                _ => r.samp.note_off(midi),
                             }
                         }
                     }
@@ -304,12 +356,21 @@ fn main() {
                         ui.drag = None;
                         ui.cable_drag = None;
                         ui.cable_to = None;
+                        ui.gate_press = None;
                         continue;
                     }
                     if ui.flipped {
                         match panel::hit_back(x, y) {
                             Action::JackOut(src) => {
-                                ui.cable_drag = Some(src);
+                                ui.cable_drag = Some(DragSrc::Audio(src));
+                                ui.cable_to = Some((x, y));
+                            }
+                            Action::GateOutJack(src) => {
+                                ui.cable_drag = Some(DragSrc::Gate(src));
+                                ui.cable_to = Some((x, y));
+                            }
+                            Action::CvOutJack(src) => {
+                                ui.cable_drag = Some(DragSrc::Cv(src));
                                 ui.cable_to = Some((x, y));
                             }
                             Action::JackIn(dst) => {
@@ -318,6 +379,22 @@ fn main() {
                                     match dst {
                                         InJack::Gm => r.gm_filter_in = rack::FilterIn::Off,
                                         InJack::Arp => r.arp_filter_in = rack::FilterIn::Off,
+                                    }
+                                }
+                            }
+                            Action::GateInJack(dst) => {
+                                if let Ok(mut r) = rack.lock() {
+                                    match dst {
+                                        GateDst::Gm => r.gm_gate_in = GateIn::Off,
+                                        GateDst::Arp => r.arp_gate_in = GateIn::Off,
+                                    }
+                                }
+                            }
+                            Action::CvInJack(dst) => {
+                                if let Ok(mut r) = rack.lock() {
+                                    match dst {
+                                        CvDst::Gm => r.gm_cv_in = CvIn::Off,
+                                        CvDst::Arp => r.arp_cv_in = CvIn::Off,
                                     }
                                 }
                             }
@@ -342,13 +419,51 @@ fn main() {
                     }
                     if let Ok(mut r) = rack.lock() {
                         let a = panel::hit(&r, x, y);
-                        apply_action(&mut r, &mut ui, a, y);
+                        match a {
+                            Action::Save => {
+                                ui.status = match project::save(&r, &project_path) {
+                                    Ok(()) => format!("SAVED {project_path}"),
+                                    Err(e) => e,
+                                };
+                            }
+                            Action::Load => {
+                                ui.status = match project::load(&project_path) {
+                                    Ok(loaded) => {
+                                        *r = loaded;
+                                        format!("LOADED {project_path}")
+                                    }
+                                    Err(e) => e,
+                                };
+                            }
+                            Action::GateCell(s, st) => {
+                                // Press starts a toggle-or-note-drag:
+                                // release without moving toggles, a
+                                // vertical drag changes the step note.
+                                let off = if s == 0 { r.gm_gate_notes[st] } else { r.arp_gate_notes[st] };
+                                ui.gate_press = Some((s, st, y, off, false));
+                            }
+                            _ => apply_action(&mut r, &mut ui, a, y),
+                        }
                     }
                 }
                 Event::MouseMotion { x, y, .. } => {
                     mouse_pos = (x, y);
                     if ui.cable_drag.is_some() {
                         ui.cable_to = Some((x, y));
+                    }
+                    if let Some((s, st, sy, off, _)) = ui.gate_press {
+                        if (y - sy).abs() > 4 {
+                            ui.gate_press = Some((s, st, sy, off, true));
+                            // Drag up = higher note, 12px per semitone.
+                            let noff = (off as i32 + (sy - y) / 12).clamp(-24, 24) as i8;
+                            if let Ok(mut r) = rack.lock() {
+                                if s == 0 {
+                                    r.gm_gate_notes[st] = noff;
+                                } else {
+                                    r.arp_gate_notes[st] = noff;
+                                }
+                            }
+                        }
                     }
                     if let Some((id, start_y, start_t)) = ui.drag {
                         if let Ok(mut r) = rack.lock() {
@@ -360,9 +475,33 @@ fn main() {
                     if let Some(src) = ui.cable_drag.take() {
                         ui.cable_to = None;
                         if ui.flipped {
-                            if let Action::JackIn(dst) = hit_back(x, y) {
-                                if let Ok(mut r) = rack.lock() {
-                                    cable_drop(&mut r, src, dst);
+                            match (src, hit_back(x, y)) {
+                                (DragSrc::Audio(a), Action::JackIn(dst)) => {
+                                    if let Ok(mut r) = rack.lock() {
+                                        cable_drop(&mut r, a, dst);
+                                    }
+                                }
+                                (DragSrc::Gate(g), Action::GateInJack(dst)) => {
+                                    if let Ok(mut r) = rack.lock() {
+                                        gate_drop(&mut r, g, dst);
+                                    }
+                                }
+                                (DragSrc::Cv(cv), Action::CvInJack(dst)) => {
+                                    if let Ok(mut r) = rack.lock() {
+                                        cv_drop(&mut r, cv, dst);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some((s, st, _, _, moved)) = ui.gate_press.take() {
+                        if !moved {
+                            if let Ok(mut r) = rack.lock() {
+                                if s == 0 {
+                                    r.gm_gate[st] = !r.gm_gate[st];
+                                } else {
+                                    r.arp_gate[st] = !r.arp_gate[st];
                                 }
                             }
                         }
@@ -370,23 +509,50 @@ fn main() {
                     ui.drag = None;
                     if let Some((s, midi)) = ui.mouse_note.take() {
                         if let Ok(mut r) = rack.lock() {
-                            if s == 0 {
-                                r.gm.voice.note_off(midi);
-                            } else {
-                                r.arp.note_off(midi as f32);
+                            match s {
+                                0 => r.gm.voice.note_off(midi),
+                                1 => r.arp.note_off(midi as f32),
+                                _ => r.samp.note_off(midi),
                             }
                         }
                     }
                 }
                 Event::MouseWheel { y, .. } => {
-                    // Wheel over a knob nudges it; y > 0 (up) increases.
+                    // Front view only: the back view has no wheel
+                    // targets, and front geometry must not leak through.
+                    if ui.flipped {
+                        continue;
+                    }
+                    // Wheel over a knob nudges it; wheel over a gate
+                    // cell nudges its note by a semitone.
                     if y != 0 {
                         if let Ok(mut r) = rack.lock() {
-                            if let Action::Knob(id) = panel::hit(&r, mouse_pos.0, mouse_pos.1) {
-                                let t = id.t(&r) + 0.02 * y as f32;
-                                id.set_t(&mut r, t);
+                            match panel::hit(&r, mouse_pos.0, mouse_pos.1) {
+                                Action::Knob(id) => {
+                                    let t = id.t(&r) + 0.02 * y as f32;
+                                    id.set_t(&mut r, t);
+                                }
+                                Action::GateCell(s, st) => {
+                                    let d = y.signum() as i8;
+                                    if s == 0 {
+                                        r.gm_gate_notes[st] =
+                                            (r.gm_gate_notes[st] + d).clamp(-24, 24);
+                                    } else {
+                                        r.arp_gate_notes[st] =
+                                            (r.arp_gate_notes[st] + d).clamp(-24, 24);
+                                    }
+                                }
+                                _ => {}
                             }
                         }
+                    }
+                }
+                Event::DropFile { filename, .. } => {
+                    if let Ok(mut r) = rack.lock() {
+                        ui.status = match r.samp.load_file(&filename) {
+                            Ok(()) => format!("SAMPLE {}", r.samp.name),
+                            Err(e) => e,
+                        };
                     }
                 }
                 _ => {}
