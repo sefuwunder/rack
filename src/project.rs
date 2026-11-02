@@ -477,11 +477,6 @@ pub fn serialize(r: &Rack) -> String {
     ]))
 }
 
-pub fn save(r: &Rack, path: &str) -> Result<(), String> {
-    let text = serialize(r);
-    std::fs::write(path, text).map_err(|e| format!("can't write {path}: {e}"))
-}
-
 fn get_f<'a>(v: &'a JVal, key: &str) -> Option<f64> {
     v.get(key).and_then(|x| x.as_f64())
 }
@@ -754,7 +749,9 @@ mod tests {
         r.mute = [false, true, false, false];
         r.master = 0.75;
         let path = "/tmp/rack-project-roundtrip.json";
-        save(&r, path).unwrap();
+        // Production path, split across threads: the audio thread
+        // serializes, the UI thread writes the file.
+        std::fs::write(path, serialize(&r)).unwrap();
         let r2 = load(path).unwrap();
         assert_eq!(r2.sp.bpm, 132.0);
         assert_eq!(r2.sp.swing, 55.0);

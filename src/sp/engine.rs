@@ -264,6 +264,11 @@ pub struct Engine {
     pub pad_hit_at: [u64; N_PADS],
     /// Last fired step within the bar (for the playhead LEDs).
     pub last_step: u32,
+    /// Step boundaries fired during the last render call, as
+    /// (sample index within that call, step). The rack maps these
+    /// to device samples so gate rows fire sample-accurately
+    /// instead of at block edges. Drained by take_step_events.
+    step_events: Vec<(usize, u32)>,
     /// Loaded tape (if any). Pads 1-8 trigger chops 1-8 while audio is present.
     pub tape: Option<Tape>,
     /// Which chop each pad plays (None = drum). 1:1 by default; a native
@@ -313,6 +318,7 @@ impl Engine {
             voice_age: 0,
             pad_hit_at: [0; N_PADS],
             last_step: 0,
+            step_events: Vec::new(),
             tape: None,
             chop_map: [None; N_PADS],
             pad_factory,
@@ -932,14 +938,21 @@ impl Engine {
         out
     }
 
+    /// Drain the step boundaries recorded by the last render call.
+    pub fn take_step_events(&mut self) -> Vec<(usize, u32)> {
+        std::mem::take(&mut self.step_events)
+    }
+
     pub fn render(&mut self, out: &mut [f32]) {
+        self.step_events.clear();
         let d = dsp::sixteenth_dur(self.bpm);
-        for s in out.iter_mut() {
+        for (i, s) in out.iter_mut().enumerate() {
             // BPM 0 parks the sequencer: steps never fire (sixteenth_dur
             // would be infinite and the step time would overflow), but
             // voices and manual pad triggers still sound.
             while self.bpm > 0.0 && self.playing && self.clock >= self.next_step_at {
                 self.fire_step(self.sched_step);
+                self.step_events.push((i, self.last_step));
                 self.sched_step += 1;
                 let bar = self.sched_step / self.seq_len as u64;
                 let st = (self.sched_step % self.seq_len as u64) as u32;

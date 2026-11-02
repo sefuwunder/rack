@@ -78,7 +78,7 @@ impl Sampler {
         Ok(())
     }
 
-    fn load_audio(&mut self, data: AudioData, name: String, path: Option<String>) {
+    pub(crate) fn load_audio(&mut self, data: AudioData, name: String, path: Option<String>) {
         let sr = data.sample_rate.max(1) as f32;
         let ratio = sr / SR;
         let out_len = ((data.samples.len() as f32 / ratio) as usize).max(1);

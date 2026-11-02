@@ -7,7 +7,8 @@
 //! code the window uses.
 
 use crate::font;
-use crate::rack::{CvIn, FilterIn, GateIn, Rack};
+use crate::rack::{CvIn, FilterIn, GateIn};
+use crate::rt::View;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::render::{Canvas, RenderTarget};
@@ -173,7 +174,7 @@ pub enum KnobId {
 
 impl KnobId {
     /// (min, max, log scale).
-    fn spec(self) -> (f32, f32, bool) {
+    pub(crate) fn spec(self) -> (f32, f32, bool) {
         use KnobId::*;
         match self {
             SpCutoff => (80.0, 12000.0, true),
@@ -259,7 +260,7 @@ impl KnobId {
         }
     }
 
-    fn get(self, r: &Rack) -> f32 {
+    fn get(self, r: &View) -> f32 {
         use KnobId::*;
         let p = r.sp_sel;
         match self {
@@ -314,66 +315,8 @@ impl KnobId {
         }
     }
 
-    fn set(self, r: &mut Rack, v: f32) {
-        use KnobId::*;
-        let p = r.sp_sel;
-        match self {
-            SpCutoff => {
-                let k = r.sp.pads[p].filter_kind;
-                r.sp.set_filter(p, k, v);
-            }
-            SpRes => r.sp.set_res(p, v),
-            SpLfoRate => r.sp.set_lfo_rate(p, v),
-            SpLfoCut => r.sp.set_lfo_cut(p, v),
-            SpLfoRes => r.sp.set_lfo_res(p, v),
-            SpLevel => r.sp.pads[p].level = v.clamp(0.0, 1.0),
-            GmOsc1 => r.gm.params.osc1_level = v,
-            GmOsc2 => r.gm.params.osc2_level = v,
-            GmCutoff => r.gm.params.cutoff = v,
-            GmReso => r.gm.params.reso = v,
-            GmAttack => r.gm.params.a_attack = v,
-            GmDecay => r.gm.params.a_decay = v,
-            GmSustain => r.gm.params.a_sustain = v,
-            GmRelease => r.gm.params.a_release = v,
-            GmGlide => r.gm.params.glide = v,
-            GmLfoRate => r.gm.params.lfo_rate = v,
-            ArpOsc1 => r.arp.params.vco1_level = v,
-            ArpOsc2 => r.arp.params.vco2_level = v,
-            ArpOsc3 => r.arp.params.vco3_level = v,
-            ArpCutoff => r.arp.params.vcf_cutoff = v,
-            ArpReso => r.arp.params.vcf_reso = v,
-            ArpAttack => r.arp.params.adsr_a = v,
-            ArpDecay => r.arp.params.adsr_d = v,
-            ArpSustain => r.arp.params.adsr_s = v,
-            ArpRelease => r.arp.params.adsr_r = v,
-            ArpGlide => r.arp.params.glide = v,
-            MixLevel(i) => r.level[i] = v,
-            MixMaster => r.master = v,
-            SpTune => r.sp.pads[p].tune_st = v.clamp(-24.0, 24.0),
-            GmNoise => r.gm.params.noise_level = v,
-            GmEnvAmt => r.gm.params.env_amt = v,
-            GmKbTrack => r.gm.params.kb_track = v,
-            GmFAttack => r.gm.params.f_attack = v,
-            GmFDecay => r.gm.params.f_decay = v,
-            GmFSustain => r.gm.params.f_sustain = v,
-            GmFRelease => r.gm.params.f_release = v,
-            GmReverb => r.gm.params.reverb_mix = v,
-            ArpNoise => r.arp.params.noise_level = v,
-            ArpRing => r.arp.params.ring_level = v,
-            ArpShRate => r.arp.params.sh_rate = v,
-            ArpLag => r.arp.params.lag_time = v,
-            ArpVcaGain => r.arp.params.vca_gain = v,
-            ArpArAttack => r.arp.params.ar_a = v,
-            ArpArRelease => r.arp.params.ar_r = v,
-            ArpReverb => r.arp.params.rev_mix = v,
-            SampLevel => r.samp.level = v.clamp(0.0, 1.0),
-            SampTune => r.samp.tune_st = v.clamp(-24.0, 24.0),
-            SampStart => r.samp.start = v.clamp(0.0, 1.0),
-        }
-    }
-
     /// Normalized 0..1 position for the indicator.
-    pub fn t(self, r: &Rack) -> f32 {
+    pub fn t(self, r: &View) -> f32 {
         let (lo, hi, log) = self.spec();
         let v = self.get(r).clamp(lo, hi);
         if log {
@@ -383,14 +326,7 @@ impl KnobId {
         }
     }
 
-    pub fn set_t(self, r: &mut Rack, t: f32) {
-        let (lo, hi, log) = self.spec();
-        let t = t.clamp(0.0, 1.0);
-        let v = if log { lo * (hi / lo).powf(t) } else { lo + (hi - lo) * t };
-        self.set(r, v);
-    }
-
-    fn fmt_val(self, r: &Rack) -> String {
+    fn fmt_val(self, r: &View) -> String {
         use KnobId::*;
         let v = self.get(r);
         match self {
@@ -532,7 +468,7 @@ fn knob<T: RenderTarget>(
     x: i32,
     y: i32,
     id: KnobId,
-    r: &Rack,
+    r: &View,
     ink: Color,
     sel: bool,
 ) {
@@ -601,7 +537,7 @@ fn draw_keyboard<T: RenderTarget>(
 
 fn draw_synth_strip<T: RenderTarget>(
     c: &mut Canvas<T>,
-    r: &Rack,
+    r: &View,
     ui: &UiState,
     synth: usize,
     y0: i32,
@@ -659,7 +595,7 @@ pub fn note_name(midi: u8) -> String {
     format!("{}{}", NAMES[(midi % 12) as usize], midi / 12 - 1)
 }
 
-pub fn draw<T: RenderTarget>(c: &mut Canvas<T>, r: &Rack, ui: &UiState) {
+pub fn draw<T: RenderTarget>(c: &mut Canvas<T>, r: &View, ui: &UiState) {
     rect(c, 0, 0, W, H, BG);
     rect(c, 0, 0, 8, H, RAIL);
     rect(c, W as i32 - 8, 0, 8, H, RAIL);
@@ -710,7 +646,7 @@ pub const LOAD_RECT: (i32, i32, i32, i32) = (136, 8, 52, 32);
 /// Flip button rect, shared by draw and the event loop.
 pub const FLIP_RECT: (i32, i32, i32, i32) = (1100, 8, 140, 32);
 
-fn draw_front<T: RenderTarget>(c: &mut Canvas<T>, r: &Rack, ui: &UiState) {
+fn draw_front<T: RenderTarget>(c: &mut Canvas<T>, r: &View, ui: &UiState) {
     // SP strip.
     rect(c, 8, SP_Y, 1264, 300, SP_BG);
     text(c, 20, SP_Y + 10, "SP-1200", 2, INK);
@@ -866,7 +802,7 @@ fn knob_cell(x: i32, y: i32) -> (i32, i32, i32, i32) {
     (x, y, 80, 84)
 }
 
-pub fn hit(r: &Rack, x: i32, y: i32) -> Action {
+pub fn hit(r: &View, x: i32, y: i32) -> Action {
     // Header.
     if in_rect(x, y, SAVE_RECT.0, SAVE_RECT.1, SAVE_RECT.2, SAVE_RECT.3) {
         return Action::Save;
@@ -1177,7 +1113,7 @@ fn bezier<T: RenderTarget>(c: &mut Canvas<T>, x0: i32, y0: i32, x1: i32, y1: i32
 
 fn draw_synth_back<T: RenderTarget>(
     c: &mut Canvas<T>,
-    r: &Rack,
+    r: &View,
     ui: &UiState,
     synth: usize,
     y0: i32,
@@ -1242,7 +1178,7 @@ fn draw_synth_back<T: RenderTarget>(
     }
 }
 
-fn draw_back<T: RenderTarget>(c: &mut Canvas<T>, r: &Rack, ui: &UiState) {
+fn draw_back<T: RenderTarget>(c: &mut Canvas<T>, r: &View, ui: &UiState) {
     // SP back: OUT + GATE OUT jacks, pad select, tune.
     rect(c, 8, BSP_Y, 1264, 300, BACK_SP_BG);
     text(c, 20, BSP_Y + 10, "SP-1200 -- BACK", 2, INK);
@@ -1383,51 +1319,44 @@ fn draw_back<T: RenderTarget>(c: &mut Canvas<T>, r: &Rack, ui: &UiState) {
 
 /// Patch a dragged cable into a synth's filter input. A synth never
 /// takes itself; anything else patches. Returns false when rejected.
-pub fn cable_drop(r: &mut Rack, src: OutJack, dst: InJack) -> bool {
-    let fi = match (dst, src) {
-        (InJack::Gm, OutJack::Sp) => FilterIn::Sp,
-        (InJack::Gm, OutJack::Arp) => FilterIn::Arp,
-        (InJack::Gm, OutJack::Samp) => FilterIn::Samp,
-        (InJack::Arp, OutJack::Sp) => FilterIn::Sp,
-        (InJack::Arp, OutJack::Gm) => FilterIn::Gm,
-        (InJack::Arp, OutJack::Samp) => FilterIn::Samp,
-        _ => return false,
-    };
-    match dst {
-        InJack::Gm => r.gm_filter_in = fi,
-        InJack::Arp => r.arp_filter_in = fi,
+/// Map a dragged audio cable to the filter-in it patches, or
+/// None for an illegal patch (a strip never takes itself).
+/// Pure: the caller sends the result to the audio thread.
+pub fn cable_filter(src: OutJack, dst: InJack) -> Option<FilterIn> {
+    match (dst, src) {
+        (InJack::Gm, OutJack::Sp) => Some(FilterIn::Sp),
+        (InJack::Gm, OutJack::Arp) => Some(FilterIn::Arp),
+        (InJack::Gm, OutJack::Samp) => Some(FilterIn::Samp),
+        (InJack::Arp, OutJack::Sp) => Some(FilterIn::Sp),
+        (InJack::Arp, OutJack::Gm) => Some(FilterIn::Gm),
+        (InJack::Arp, OutJack::Samp) => Some(FilterIn::Samp),
+        _ => None,
     }
-    true
 }
 
-/// Patch a dragged gate cable into a synth's gate input. The strip
-/// keeps its own per-step notes and borrows only the pattern.
-/// A strip never takes itself.
-pub fn gate_drop(r: &mut Rack, src: GateSrc, dst: GateDst) -> bool {
-    let gi = match (dst, src) {
-        (GateDst::Gm, GateSrc::Sp) => GateIn::Sp,
-        (GateDst::Gm, GateSrc::Arp) => GateIn::Arp,
-        (GateDst::Arp, GateSrc::Sp) => GateIn::Sp,
-        (GateDst::Arp, GateSrc::Gm) => GateIn::Gm,
-        _ => return false,
-    };
-    match dst {
-        GateDst::Gm => r.gm_gate_in = gi,
-        GateDst::Arp => r.arp_gate_in = gi,
+/// Map a dragged gate cable to the gate-in it patches, or None
+/// for an illegal patch. The strip keeps its own per-step notes
+/// and borrows only the pattern. Pure: see cable_filter.
+pub fn gate_filter(src: GateSrc, dst: GateDst) -> Option<GateIn> {
+    match (dst, src) {
+        (GateDst::Gm, GateSrc::Sp) => Some(GateIn::Sp),
+        (GateDst::Gm, GateSrc::Arp) => Some(GateIn::Arp),
+        (GateDst::Arp, GateSrc::Sp) => Some(GateIn::Sp),
+        (GateDst::Arp, GateSrc::Gm) => Some(GateIn::Gm),
+        _ => None,
     }
-    true
 }
 
-/// Patch the grandmother's LFO into a synth's cutoff input.
-pub fn cv_drop(r: &mut Rack, src: CvSrc, dst: CvDst) -> bool {
+/// Map a dragged CV cable to the cutoff input it patches, or
+/// None unless the source is the grandmother's LFO. Pure: see
+/// cable_filter.
+pub fn cv_filter(src: CvSrc, dst: CvDst) -> Option<CvIn> {
     if src != CvSrc::Lfo {
-        return false;
+        return None;
     }
     match dst {
-        CvDst::Gm => r.gm_cv_in = CvIn::Lfo,
-        CvDst::Arp => r.arp_cv_in = CvIn::Lfo,
+        CvDst::Gm | CvDst::Arp => Some(CvIn::Lfo),
     }
-    true
 }
 
 fn jack_hit(x: i32, y: i32, cx: i32, cy: i32) -> bool {
@@ -1544,21 +1473,22 @@ pub fn hit_back(x: i32, y: i32) -> Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rack::Rack;
 
     #[test]
     fn hit_spots_match_drawn_cells() {
-        let r = Rack::new();
-        assert_eq!(hit(&r, 210, 20), Action::Transport);
-        assert_eq!(hit(&r, 30, SP_Y + 60), Action::Pad(0));
-        assert_eq!(hit(&r, 130, SP_Y + 140), Action::Step(0));
-        assert_eq!(hit(&r, 240, SP_Y + 210), Action::Knob(KnobId::SpCutoff));
-        assert_eq!(hit(&r, 770, GM_Y + 165), Action::GateCell(0, 0));
-        assert_eq!(hit(&r, 1090, GM_Y + 20), Action::GmFilterIn);
-        assert_eq!(hit(&r, 210, MIX_Y + 60), Action::Knob(KnobId::MixLevel(0)));
-        assert_eq!(hit(&r, 870, MIX_Y + 60), Action::Knob(KnobId::MixLevel(3)));
-        assert_eq!(hit(&r, 1130, MIX_Y + 60), Action::Knob(KnobId::MixMaster));
-        assert_eq!(hit(&r, 30, SAMP_Y + 160), Action::SampKey(48));
-        assert_eq!(hit(&r, 5, 5), Action::None);
+        let v = View::from_rack(&Rack::new());
+        assert_eq!(hit(&v, 210, 20), Action::Transport);
+        assert_eq!(hit(&v, 30, SP_Y + 60), Action::Pad(0));
+        assert_eq!(hit(&v, 130, SP_Y + 140), Action::Step(0));
+        assert_eq!(hit(&v, 240, SP_Y + 210), Action::Knob(KnobId::SpCutoff));
+        assert_eq!(hit(&v, 770, GM_Y + 165), Action::GateCell(0, 0));
+        assert_eq!(hit(&v, 1090, GM_Y + 20), Action::GmFilterIn);
+        assert_eq!(hit(&v, 210, MIX_Y + 60), Action::Knob(KnobId::MixLevel(0)));
+        assert_eq!(hit(&v, 870, MIX_Y + 60), Action::Knob(KnobId::MixLevel(3)));
+        assert_eq!(hit(&v, 1130, MIX_Y + 60), Action::Knob(KnobId::MixMaster));
+        assert_eq!(hit(&v, 30, SAMP_Y + 160), Action::SampKey(48));
+        assert_eq!(hit(&v, 5, 5), Action::None);
     }
 
 #[test]
@@ -1585,21 +1515,6 @@ fn primitives_draw_on_surface() {
 }
 
     #[test]
-    fn knob_round_trips_through_t() {
-        let mut r = Rack::new();
-        let id = KnobId::GmCutoff;
-        id.set_t(&mut r, 0.5);
-        let v = id.get(&r);
-        // 20 * (20000/20)^0.5 = 20 * sqrt(1000) ~= 632.
-        assert!((v - 632.0).abs() < 2.0, "log knob midpoint: {v}");
-        assert!((id.t(&r) - 0.5).abs() < 1e-4);
-        id.set_t(&mut r, 0.0);
-        assert_eq!(id.get(&r), 20.0);
-        id.set_t(&mut r, 1.0);
-        assert_eq!(id.get(&r), 20000.0);
-    }
-
-    #[test]
     fn back_jacks_hit_and_cables_patch() {
         assert_eq!(hit_back(60, BSP_Y + 70), Action::JackOut(OutJack::Sp));
         assert_eq!(hit_back(60, BSP_Y + 170), Action::GateOutJack(GateSrc::Sp));
@@ -1610,42 +1525,18 @@ fn primitives_draw_on_surface() {
         assert_eq!(hit_back(60, BSAMP_Y + 70), Action::JackOut(OutJack::Samp));
         assert_eq!(hit_back(60, BGM_Y + 250), Action::Knob(KnobId::GmNoise));
         assert_eq!(hit_back(360, BSP_Y + 70), Action::SelectPad(1));
-        let mut r = Rack::new();
-        assert!(cable_drop(&mut r, OutJack::Sp, InJack::Gm));
-        assert_eq!(r.gm_filter_in, FilterIn::Sp);
-        assert!(cable_drop(&mut r, OutJack::Arp, InJack::Gm));
-        assert_eq!(r.gm_filter_in, FilterIn::Arp);
-        assert!(cable_drop(&mut r, OutJack::Samp, InJack::Gm));
-        assert_eq!(r.gm_filter_in, FilterIn::Samp);
-        assert!(!cable_drop(&mut r, OutJack::Gm, InJack::Gm));
-        assert_eq!(r.gm_filter_in, FilterIn::Samp, "self-patch must not change state");
-        assert!(cable_drop(&mut r, OutJack::Gm, InJack::Arp));
-        assert_eq!(r.arp_filter_in, FilterIn::Gm);
-        assert!(!cable_drop(&mut r, OutJack::Arp, InJack::Arp));
-        assert!(gate_drop(&mut r, GateSrc::Sp, GateDst::Gm));
-        assert_eq!(r.gm_gate_in, GateIn::Sp);
-        assert!(!gate_drop(&mut r, GateSrc::Gm, GateDst::Gm));
-        assert_eq!(r.gm_gate_in, GateIn::Sp, "self gate-patch must not change state");
-        assert!(gate_drop(&mut r, GateSrc::Gm, GateDst::Arp));
-        assert_eq!(r.arp_gate_in, GateIn::Gm);
-        assert!(cv_drop(&mut r, CvSrc::Lfo, CvDst::Arp));
-        assert_eq!(r.arp_cv_in, CvIn::Lfo);
-    }
-
-    #[test]
-    fn back_knobs_round_trip() {
-        let mut r = Rack::new();
-        KnobId::SpTune.set_t(&mut r, 0.5);
-        assert_eq!(KnobId::SpTune.get(&r), 0.0);
-        KnobId::GmEnvAmt.set_t(&mut r, 0.75);
-        assert!((KnobId::GmEnvAmt.get(&r) - 0.5).abs() < 1e-4);
-        KnobId::ArpShRate.set_t(&mut r, 0.5);
-        // sqrt(0.1 * 50) = sqrt(5) ~= 2.236.
-        assert!((KnobId::ArpShRate.get(&r) - 2.236).abs() < 0.01);
-        KnobId::SampTune.set_t(&mut r, 0.75);
-        assert_eq!(KnobId::SampTune.get(&r), 12.0);
-        KnobId::SampStart.set_t(&mut r, 0.25);
-        assert!((KnobId::SampStart.get(&r) - 0.25).abs() < 1e-4);
+        // Cable mappers are pure: they report the patch, the audio
+        // thread applies it (covered end to end in rt tests).
+        assert_eq!(cable_filter(OutJack::Sp, InJack::Gm), Some(FilterIn::Sp));
+        assert_eq!(cable_filter(OutJack::Arp, InJack::Gm), Some(FilterIn::Arp));
+        assert_eq!(cable_filter(OutJack::Samp, InJack::Gm), Some(FilterIn::Samp));
+        assert_eq!(cable_filter(OutJack::Gm, InJack::Gm), None, "self-patch is illegal");
+        assert_eq!(cable_filter(OutJack::Gm, InJack::Arp), Some(FilterIn::Gm));
+        assert_eq!(cable_filter(OutJack::Arp, InJack::Arp), None);
+        assert_eq!(gate_filter(GateSrc::Sp, GateDst::Gm), Some(GateIn::Sp));
+        assert_eq!(gate_filter(GateSrc::Gm, GateDst::Gm), None, "self gate-patch is illegal");
+        assert_eq!(gate_filter(GateSrc::Gm, GateDst::Arp), Some(GateIn::Gm));
+        assert_eq!(cv_filter(CvSrc::Lfo, CvDst::Arp), Some(CvIn::Lfo));
     }
 
     #[test]
@@ -1656,10 +1547,11 @@ fn primitives_draw_on_surface() {
         r.gm_gate[0] = true;
         r.gm_gate_notes[0] = 7;
         r.samp.note_on(60);
+        let v = View::from_rack(&r);
         let ui = UiState::default();
         let surface = Surface::new(W, H, PixelFormatEnum::RGB24).unwrap();
         let mut canvas = surface.into_canvas().unwrap();
-        super::draw(&mut canvas, &r, &ui);
+        super::draw(&mut canvas, &v, &ui);
     }
 
     #[test]
@@ -1671,9 +1563,10 @@ fn primitives_draw_on_surface() {
         r.arp_filter_in = FilterIn::Gm;
         r.gm_gate_in = GateIn::Sp;
         r.arp_cv_in = CvIn::Lfo;
+        let v = View::from_rack(&r);
         let ui = UiState { flipped: true, cable_drag: Some(DragSrc::Audio(OutJack::Arp)), cable_to: Some((500, 500)), ..UiState::default() };
         let surface = Surface::new(W, H, PixelFormatEnum::RGB24).unwrap();
         let mut canvas = surface.into_canvas().unwrap();
-        super::draw(&mut canvas, &r, &ui);
+        super::draw(&mut canvas, &v, &ui);
     }
 }

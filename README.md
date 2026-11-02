@@ -55,7 +55,7 @@ stay on the front: they are step sequencers, not patch points.
   melody on the drums' rhythm, for example. A strip never takes itself.
 - **Cutoff in** (yellow): the grandmother's LFO OUT bends a strip's
   cutoff by up to +-1 octave (triangle by default, rate from the front
-  LFO RATE knob). CV updates once per render block (~23 ms), which is
+  LFO RATE knob). CV updates once per render block (~5.8 ms), which is
   fine for musical LFO rates. The base cutoff is restored after every
   render, so knob reads always show the unbent value. Self-patching
   the grandmother's LFO into its own cutoff is allowed: the LFO does
@@ -89,7 +89,12 @@ minimal built-in parser (no new dependency).
 ## Clock and mixer
 
 - **Mixer**: every device feeds its own channel (level, mute) into the
-  master. All four engines render into one 44.1 kHz mono callback.
+  master. All four engines render into one 44.1 kHz mono callback
+  with 256-sample blocks (5.8 ms). The audio thread owns the Rack
+  outright: the UI sends commands down a channel and reads a
+  snapshot back each block, so no lock sits on the render path and
+  the UI can stall, decode, or write files without glitching audio.
+  The arp synth is stereo; its frames are folded to mono.
 - **Clock gates**: on every SP step, each synth's GATE row fires: a set
   gate retriggers that synth at its base note plus the step offset, an
   unset gate releases it. Gate rows loop every 16 steps, so rows past
@@ -161,8 +166,9 @@ live in `tests/data/`.
   exposed). Cables carry filter-in, gate, and one CV path only.
 - No fourtrack tape panel (the engine is vendored; the tape UI is not
   wired in yet). Step length stays 16 in the UI.
-- Gate timing is block-level (a gate note starts within the same
-  23 ms block as its step, not sample-accurately); CV is block-rate too.
+- Gate timing is sample-accurate (a gate fires on its step
+  boundary's device sample, not at a block edge); CV is still
+  block-rate (one LFO value per 5.8 ms block).
 - Gate notes and keyboard notes share each device's mono voice; the
   last event wins. The sampler is mono as well.
 - The sampler is one voice, one sample, root C4. It does not slice,

@@ -121,7 +121,6 @@ pub struct Rack {
     pub selected: usize,
     /// Selected SP pad for the step row and filter/LFO knobs.
     pub sp_sel: usize,
-    prev_step: u32,
     sp_buf: Vec<f32>,
     sp_pos: f64,
     /// Block peaks for the meters; the UI decays them per frame.
@@ -162,7 +161,6 @@ impl Rack {
             arp_octave: 0,
             selected: 0,
             sp_sel: 0,
-            prev_step: 0,
             sp_buf: Vec::with_capacity(8192),
             sp_pos: 0.0,
             peak: [0.0; 4],
@@ -214,17 +212,95 @@ impl Rack {
         }
     }
 
+    /// Fire one SP step's gate rows: a hit retriggers the strip's
+    /// note (pattern row + per-step offset), a miss releases the
+    /// held note. A patched strip borrows another row's pattern
+    /// but keeps its own per-step notes; the held note is tracked
+    /// so release targets the note that actually sounded, not
+    /// the base.
+    fn fire_gate_step(&mut self, step: u32) {
+        let st = (step % 16) as usize;
+        for synth in 0..2 {
+            let note = {
+                let (pattern, notes): (&[bool], &[i8; 16]) = match synth {
+                    0 => match self.gm_gate_in {
+                        GateIn::Off => (&self.gm_gate, &self.gm_gate_notes),
+                        GateIn::Sp => (&self.sp.patterns[self.sp_sel][..16], &self.gm_gate_notes),
+                        GateIn::Gm => (&self.gm_gate, &self.gm_gate_notes),
+                        GateIn::Arp => (&self.arp_gate, &self.gm_gate_notes),
+                    },
+                    _ => match self.arp_gate_in {
+                        GateIn::Off => (&self.arp_gate, &self.arp_gate_notes),
+                        GateIn::Sp => (&self.sp.patterns[self.sp_sel][..16], &self.arp_gate_notes),
+                        GateIn::Gm => (&self.gm_gate, &self.arp_gate_notes),
+                        GateIn::Arp => (&self.arp_gate, &self.arp_gate_notes),
+                    },
+                };
+                gate_trigger(pattern, notes, self.base_note(synth), st)
+            };
+            match note {
+                Some(note) => {
+                    if synth == 0 {
+                        self.gm.voice.note_on(note);
+                    } else {
+                        self.arp.note_on(note as f32);
+                    }
+                    self.gate_held[synth] = Some(note);
+                }
+                None => {
+                    if let Some(n) = self.gate_held[synth].take() {
+                        if synth == 0 {
+                            self.gm.voice.note_off(n);
+                        } else {
+                            self.arp.note_off(n as f32);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Render device samples [a, b) of the synth voices + sampler
+    /// into the bus slices. The arp synth is stereo: render its
+    /// frames into a scratch buffer and fold to mono.
+    fn render_voices(
+        &mut self,
+        a: usize,
+        b: usize,
+        gm_buf: &mut [f32],
+        arp_buf: &mut [f32],
+        samp_buf: &mut [f32],
+        arp_tmp: &mut Vec<f32>,
+    ) {
+        self.gm.render(&mut gm_buf[a..b]);
+        self.samp.render(&mut samp_buf[a..b]);
+        let len = b - a;
+        arp_tmp.resize(len * 2, 0.0);
+        self.arp.render(&mut arp_tmp[..len * 2]);
+        for i in 0..len {
+            arp_buf[a + i] = (arp_tmp[2 * i] + arp_tmp[2 * i + 1]) * 0.5;
+        }
+    }
+
     /// Render one device-rate block into `out` (mono, -1..1).
+    /// Gate rows fire at the device sample where the SP step
+    /// boundary lands inside this block, not at the block edge:
+    /// the SP engine reports each step's engine-sample index,
+    /// mapped through the resample position to a device offset.
+    /// The arp synth is stereo; its frames are folded to mono
+    /// ((l + r) / 2) so it plays at device rate, not half speed.
     pub fn render_block(&mut self, out: &mut [f32]) {
         let n = out.len();
         // --- SP bus: render at engine rate, resample linearly. ---
         let ratio = sp::dsp::SP_RATE / SR as f64;
+        let sp_pos_before = self.sp_pos;
         let need_end = (self.sp_pos + n as f64 * ratio).ceil() as usize + 2;
+        let old = self.sp_buf.len();
         if need_end > self.sp_buf.len() {
-            let old = self.sp_buf.len();
             self.sp_buf.resize(need_end, 0.0);
             self.sp.render(&mut self.sp_buf[old..need_end]);
         }
+        let events = self.sp.take_step_events();
         let mut sp_bus = vec![0.0f32; n];
         let mut pos = self.sp_pos;
         for s in sp_bus.iter_mut() {
@@ -240,57 +316,34 @@ impl Rack {
             self.sp_pos -= drop as f64;
         }
 
-        // --- Clock gates: a newly fired SP step triggers gate rows.
-        // A patched strip borrows another row's pattern but keeps its
-        // own per-step notes; the held note is tracked so release
-        // targets the note that actually sounded, not the base.
-        if self.sp.playing && self.sp.last_step != self.prev_step {
-            self.prev_step = self.sp.last_step;
-            let st = (self.sp.last_step % 16) as usize;
-            for synth in 0..2 {
-                let note = {
-                    let (pattern, notes): (&[bool], &[i8; 16]) = match synth {
-                        0 => match self.gm_gate_in {
-                            GateIn::Off => (&self.gm_gate, &self.gm_gate_notes),
-                            GateIn::Sp => (&self.sp.patterns[self.sp_sel][..16], &self.gm_gate_notes),
-                            GateIn::Gm => (&self.gm_gate, &self.gm_gate_notes),
-                            GateIn::Arp => (&self.arp_gate, &self.gm_gate_notes),
-                        },
-                        _ => match self.arp_gate_in {
-                            GateIn::Off => (&self.arp_gate, &self.arp_gate_notes),
-                            GateIn::Sp => (&self.sp.patterns[self.sp_sel][..16], &self.arp_gate_notes),
-                            GateIn::Gm => (&self.gm_gate, &self.arp_gate_notes),
-                            GateIn::Arp => (&self.arp_gate, &self.arp_gate_notes),
-                        },
-                    };
-                    gate_trigger(pattern, notes, self.base_note(synth), st)
-                };
-                match note {
-                    Some(note) => {
-                        if synth == 0 {
-                            self.gm.voice.note_on(note);
-                        } else {
-                            self.arp.note_on(note as f32);
-                        }
-                        self.gate_held[synth] = Some(note);
-                    }
-                    None => {
-                        if let Some(n) = self.gate_held[synth].take() {
-                            if synth == 0 {
-                                self.gm.voice.note_off(n);
-                            } else {
-                                self.arp.note_off(n as f32);
-                            }
-                        }
-                    }
+        // --- Gate boundaries: engine-sample step events mapped to
+        // device samples. The event order is chronological, so the
+        // device offsets are non-decreasing and a last-wins pass
+        // dedupes steps that land on one sample (catch-up bursts
+        // when the clock restarts). Anything past the block end
+        // fires after it, landing on the next block's sample 0,
+        // so no step is ever lost to the resample overlap.
+        let mut bounds: Vec<(usize, u32)> = Vec::new();
+        for (ei, step) in events {
+            let pos = old as f64 + ei as f64;
+            let mut j = ((pos - sp_pos_before) / ratio).ceil() as usize;
+            if j > n {
+                j = n;
+            }
+            if let Some(last) = bounds.last_mut() {
+                if last.0 == j {
+                    last.1 = step;
+                    continue;
                 }
             }
+            bounds.push((j, step));
         }
 
         // --- CV: the grandmother's LFO bends a strip's cutoff by up
-        // to +-1 octave. Applied per block, restored right after the
-        // render, so knob reads always see the base value (the whole
-        // block holds the Rack lock, so the UI never sees it bent).
+        // to +-1 octave. Applied per block, restored right after
+        // the render, so knob reads always see the base value (the
+        // snapshot is published after the restore, so the UI never
+        // sees it bent).
         let lfo = self.gm.lfo_value();
         let gm_base_cut = self.gm.params.cutoff;
         let arp_base_cut = self.arp.params.vcf_cutoff;
@@ -301,13 +354,41 @@ impl Rack {
             self.arp.params.vcf_cutoff = (arp_base_cut * 2.0f32.powf(lfo)).clamp(20.0, 20000.0);
         }
 
-        // --- Synth voices + sampler at device rate. ---
+        // --- Synth voices + sampler at device rate, in segments
+        // split at gate boundaries. A boundary fires before the
+        // segment that starts on it, so the note starts on the
+        // boundary sample; a trailing boundary (j == n) fires
+        // after the block, landing on the next block's sample 0.
         let mut gm_buf = vec![0.0f32; n];
         let mut arp_buf = vec![0.0f32; n];
         let mut samp_buf = vec![0.0f32; n];
-        self.gm.render(&mut gm_buf);
-        self.arp.render(&mut arp_buf);
-        self.samp.render(&mut samp_buf);
+        let mut arp_tmp: Vec<f32> = Vec::new();
+        let mut start = 0usize;
+        let mut trailing: Option<u32> = None;
+        for (j, step) in &bounds {
+            if *j < n {
+                if *j > start {
+                    self.render_voices(
+                        start,
+                        *j,
+                        &mut gm_buf,
+                        &mut arp_buf,
+                        &mut samp_buf,
+                        &mut arp_tmp,
+                    );
+                    start = *j;
+                }
+                self.fire_gate_step(*step);
+            } else {
+                trailing = Some(*step);
+            }
+        }
+        if start < n {
+            self.render_voices(start, n, &mut gm_buf, &mut arp_buf, &mut samp_buf, &mut arp_tmp);
+        }
+        if let Some(step) = trailing {
+            self.fire_gate_step(step);
+        }
         self.gm.params.cutoff = gm_base_cut;
         self.arp.params.vcf_cutoff = arp_base_cut;
 
@@ -532,6 +613,79 @@ mod tests {
         }
         assert_ne!(plain, bent, "LFO on cutoff must change the GM voice");
         assert_eq!(r2.gm.params.cutoff, base, "base cutoff must be restored after render");
+    }
+
+    #[test]
+    fn arp_fold_plays_at_device_rate() {
+        // The arp synth is stereo; folding its frames to mono must
+        // keep its pitch. A 440 Hz note (MIDI 69) rendered for a
+        // second must cross zero ~880 times (2 per saw period),
+        // not ~440 (half speed, the old interleaved treatment).
+        let mut r = Rack::new();
+        r.mute = [true, true, false, true];
+        r.arp.note_on(69.0);
+        let mut out = vec![0.0f32; 44100];
+        r.render_block(&mut out);
+        let meas = &out[4410..];
+        let crossings =
+            meas.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+        assert!(
+            (600..=1100).contains(&crossings),
+            "arp pitch must be ~440 Hz, crossings={crossings}"
+        );
+    }
+
+    #[test]
+    fn gate_fires_mid_block_not_at_block_edge() {
+        // 120 BPM, swing 50: steps every 5512.5 device samples, so
+        // boundaries land mid-block, never on a block edge. Only
+        // step 1 is gated, so the first onset is that step.
+        let setup = || {
+            let mut r = Rack::new();
+            r.sp.playing = true;
+            r.sp.bpm = 120.0;
+            r.sp.swing = 50.0;
+            r.gm_gate[1] = true;
+            r.mute = [true, false, true, true];
+            r
+        };
+        let mut r = setup();
+        let mut onset = None;
+        let mut at = 0usize;
+        for _ in 0..64 {
+            let mut blk = vec![0.0f32; 256];
+            r.render_block(&mut blk);
+            if onset.is_none() {
+                if let Some(i) = blk.iter().position(|v| v.abs() > 1e-4) {
+                    onset = Some(at + i);
+                }
+            }
+            at += 256;
+        }
+        let onset = onset.expect("gated note must sound");
+        assert_ne!(onset % 256, 0, "gate must fire mid-block, not at a block edge: {onset}");
+        // Same timeline rendered in 1024-sample blocks must put
+        // the onset on the same sample (within a few samples for
+        // the attack ramp and resample rounding), proving timing
+        // is sample-based, not block-based.
+        let mut r2 = setup();
+        let mut onset2 = None;
+        let mut at2 = 0usize;
+        for _ in 0..16 {
+            let mut blk = vec![0.0f32; 1024];
+            r2.render_block(&mut blk);
+            if onset2.is_none() {
+                if let Some(i) = blk.iter().position(|v| v.abs() > 1e-4) {
+                    onset2 = Some(at2 + i);
+                }
+            }
+            at2 += 1024;
+        }
+        let onset2 = onset2.expect("gated note must sound in 1024-block render");
+        assert!(
+            (onset as i32 - onset2 as i32).abs() <= 8,
+            "onset must not depend on block size: {onset} vs {onset2}"
+        );
     }
 
     #[test]
